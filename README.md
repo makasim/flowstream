@@ -14,3 +14,50 @@ That design is implemented on purpose this way and provides several benefits.
 - There is as few meta state changes as possible.
 - Works on Postgress with great speed (TBD).
 
+Produce:
+```go
+// See flowstate docs on how to init Engine
+var e *flowstate.Engine
+
+p := flowstream.NewProducer(`foo-stream`, e)
+
+for i := 0; i < 10; i++ {
+	if err := p.Send(&flowstream.Message{
+		Body: []byte(fmt.Sprintf("hello world %d", cnt)),
+	}); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Consume:
+```go
+// See flowstate docs on how to init Engine
+var e *flowstate.Engine
+
+c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, e, l)
+if err != nil {
+	log.Fatal(err)
+}
+
+for {
+	for c.Next() {  
+		m := c.Message()
+		// handle your message here
+		
+		// commit one by one or by batches
+		//if err := c.Commit(c.Message().Rev); err != nil {
+		//	log.Fatal(err)
+		//}
+	}
+	
+	if err := c.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Consumer reached the head of the topic, wait for a new message arrive or ctx time out.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	c.Wait(ctx)
+	cancel()
+}
+```

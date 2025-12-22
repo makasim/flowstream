@@ -1,4 +1,4 @@
-package dchan
+package flowstream
 
 import (
 	"context"

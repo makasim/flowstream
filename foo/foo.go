@@ -26,11 +26,11 @@ func main() {
 
 	wg.Go(func() {
 		var cnt int
-		p := dchan.NewProducer(`fooStream`, e)
+		p := flowstream.NewProducer(`fooStream`, e)
 
 		for i := 0; i < 10; i++ {
 			cnt++
-			if err := p.Send(&dchan.Message{
+			if err := p.Send(&flowstream.Message{
 				Body: []byte(fmt.Sprintf("hello world %d", cnt)),
 			}); err != nil {
 				log.Fatal(err)
@@ -40,7 +40,7 @@ func main() {
 		time.Sleep(65 * time.Second)
 		for i := 0; i < 10; i++ {
 			cnt++
-			if err := p.Send(&dchan.Message{
+			if err := p.Send(&flowstream.Message{
 				Body: []byte(fmt.Sprintf("hello world %d", cnt)),
 			}); err != nil {
 				log.Fatal(err)
@@ -49,7 +49,7 @@ func main() {
 	})
 
 	wg.Go(func() {
-		c, err := dchan.NewConsumer(`fooStream`, `aGroup`, e, l)
+		c, err := flowstream.NewConsumer(`fooStream`, `aGroup`, e, l)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -79,7 +79,7 @@ func main() {
 	})
 
 	wg.Go(func() {
-		c, err := dchan.NewConsumer(`fooStream`, `aGroup`, e, l)
+		c, err := flowstream.NewConsumer(`fooStream`, `aGroup`, e, l)
 		if err != nil {
 			log.Fatal(err)
 		}

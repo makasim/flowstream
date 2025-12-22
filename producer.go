@@ -1,4 +1,4 @@
-package dchan
+package flowstream
 
 import (
 	"github.com/makasim/flowstate"
