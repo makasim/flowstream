@@ -52,12 +52,7 @@ func NewConsumer(stream, group string, d flowstate.Driver, l *slog.Logger) (*Con
 		return nil, err
 	}
 
-	// DEBUG
-	if c.canConsume(c.s) {
-		c.l.Debug(fmt.Sprintf("%s: active rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
-	} else {
-		c.l.Debug(fmt.Sprintf("%s: standby rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
-	}
+	c.logState(c.s)
 
 	go c.doSyncState()
 
@@ -194,6 +189,7 @@ func (c *Consumer) doSyncState() {
 
 			c.mu.Lock()
 			if nextS.Rev <= c.s.Rev {
+				c.s.CopyTo(&s)
 				c.mu.Unlock()
 				continue
 			}
@@ -201,12 +197,7 @@ func (c *Consumer) doSyncState() {
 			nextS.CopyTo(&s)
 			c.mu.Unlock()
 
-			// DEBUG
-			if c.canConsume(c.s) {
-				c.l.Debug(fmt.Sprintf("%s: active rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
-			} else {
-				c.l.Debug(fmt.Sprintf("%s: standby rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
-			}
+			c.logState(c.s)
 
 			if !c.isActive(s) {
 				if err := c.doTakeover(s); err != nil {
@@ -388,10 +379,18 @@ func (c *Consumer) resetHeartbeat(s flowstate.State, t *time.Timer) (*time.Timer
 	}
 
 	if c.canConsume(s) {
-		t.Reset(time.Second * 29)
+		t.Reset(time.Second * 28)
 		return t, c.maybeDoHeartbeat
 	}
 
 	t.Reset(time.Minute)
 	return t, c.maybeDoTakeover
+}
+
+func (c *Consumer) logState(s flowstate.State) {
+	if c.canConsume(s) {
+		c.l.Info(fmt.Sprintf("%s: active rev=%d ann=%+v", c.id, s.Rev, s.Annotations))
+	} else {
+		c.l.Info(fmt.Sprintf("%s: standby rev=%d ann=%+v", c.id, s.Rev, s.Annotations))
+	}
 }

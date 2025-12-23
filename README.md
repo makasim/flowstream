@@ -37,7 +37,7 @@ Consume:
 // https://github.com/makasim/flowstate#drivers
 var d flowstate.Driver
 
-c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, d, l)
+c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, d, slog.Default())
 if err != nil {
 	log.Fatal(err)
 }
