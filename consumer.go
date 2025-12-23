@@ -304,7 +304,6 @@ func (c *Consumer) doTakeover(s flowstate.State) error {
 	stateCtx := s.CopyToCtx(&flowstate.StateCtx{})
 	stateCtx.Current.Annotations["id"] = c.id
 	stateCtx.Current.Annotations["state"] = "1"
-	log.Println("TAKING OVER", stateCtx.Current.Annotations)
 	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); flowstate.IsErrRevMismatch(err) {
 		return c.getLatestOrCreateLocked(s.Rev)
 	} else if err != nil {
