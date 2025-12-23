@@ -3,7 +3,6 @@ package flowstream
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -55,9 +54,9 @@ func NewConsumer(stream, group string, d flowstate.Driver, l *slog.Logger) (*Con
 
 	// DEBUG
 	if c.canConsume(c.s) {
-		c.l.Info(fmt.Sprintf("%s: %s: active", c.id, c.group))
+		c.l.Debug(fmt.Sprintf("%s: active rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
 	} else {
-		c.l.Info(fmt.Sprintf("%s: %s: standby", c.id, c.group))
+		c.l.Debug(fmt.Sprintf("%s: standby rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
 	}
 
 	go c.doSyncState()
@@ -65,8 +64,11 @@ func NewConsumer(stream, group string, d flowstate.Driver, l *slog.Logger) (*Con
 	return c, nil
 }
 
+func (c *Consumer) ID() string {
+	return c.id
+}
+
 func (c *Consumer) Shutdown() error {
-	log.Println("SHUTDOWN")
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -143,7 +145,6 @@ func (c *Consumer) Commit(rev int64) error {
 		return fmt.Errorf("consumer cannot commit as it is in standby state")
 	}
 
-	log.Println("commit", rev)
 	stateCtx := c.s.CopyToCtx(&flowstate.StateCtx{})
 	stateCtx.Current.SetAnnotation("rev", strconv.FormatInt(rev, 10))
 	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
@@ -197,17 +198,18 @@ func (c *Consumer) doSyncState() {
 				continue
 			}
 			nextS.CopyTo(&c.s)
+			nextS.CopyTo(&s)
 			c.mu.Unlock()
 
 			// DEBUG
 			if c.canConsume(c.s) {
-				c.l.Info(fmt.Sprintf("%s: %s: active", c.id, c.group))
+				c.l.Debug(fmt.Sprintf("%s: active rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
 			} else {
-				c.l.Info(fmt.Sprintf("%s: %s: standby", c.id, c.group))
+				c.l.Debug(fmt.Sprintf("%s: standby rev=%d ann=%+v", c.id, c.s.Rev, c.s.Annotations))
 			}
 
-			if !c.isActive(nextS) {
-				if err := c.doTakeover(nextS); err != nil {
+			if !c.isActive(s) {
+				if err := c.doTakeover(s); err != nil {
 					c.l.Error("failed to takeover",
 						"id", c.id,
 						"stream", c.stream,
@@ -220,7 +222,7 @@ func (c *Consumer) doSyncState() {
 				}
 			}
 
-			hbt, hbf = c.resetHeartbeat(nextS, hbt)
+			hbt, hbf = c.resetHeartbeat(s, hbt)
 		}
 
 		if iter.Err() != nil {
@@ -247,10 +249,6 @@ func (c *Consumer) doSyncState() {
 }
 
 func (c *Consumer) maybeDoHeartbeat(s flowstate.State) error {
-	if !c.canConsume(s) {
-		panic("BUG: consumer in standbay mode should not perform heartbeat")
-	}
-
 	msgStateCtx := &flowstate.StateCtx{}
 	if err := c.d.GetStateByLabels(flowstate.GetStateByLabels(msgStateCtx, map[string]string{
 		"stream": c.stream,
@@ -262,15 +260,27 @@ func (c *Consumer) maybeDoHeartbeat(s flowstate.State) error {
 		return nil
 	}
 
-	return c.doHeartbeat(s)
-}
-
-func (c *Consumer) doHeartbeat(s flowstate.State) error {
-	if err := c.Commit(s.Rev); flowstate.IsErrRevMismatch(err) {
+	if err := c.doHeartbeat(s); flowstate.IsErrRevMismatch(err) {
 		return c.getLatestOrCreateLocked(s.Rev)
 	} else if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (c *Consumer) doHeartbeat(s flowstate.State) error {
+	if !c.canConsume(s) {
+		panic("BUG: consumer in standbay mode should not perform heartbeat")
+	}
+
+	stateCtx := s.CopyToCtx(&flowstate.StateCtx{})
+	stateCtx.Current.SetAnnotation("rev", strconv.FormatInt(c.sinceRev(s), 10))
+	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
+		return err
+	}
+	stateCtx.Current.CopyTo(&c.s)
+	c.initIterLocked()
 
 	return nil
 }
