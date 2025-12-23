@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/makasim/flowstate"
 	"github.com/makasim/flowstate/memdriver"
 	"github.com/makasim/flowstream"
 )
@@ -19,14 +18,10 @@ func main() {
 
 	l := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	d := memdriver.New(l)
-	e, err := flowstate.NewEngine(d, &flowstate.DefaultFlowRegistry{}, l)
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	wg.Go(func() {
 		var cnt int
-		p := flowstream.NewProducer(`fooStream`, e)
+		p := flowstream.NewProducer(`fooStream`, d)
 
 		for i := 0; i < 10; i++ {
 			cnt++
@@ -49,7 +44,7 @@ func main() {
 	})
 
 	wg.Go(func() {
-		c, err := flowstream.NewConsumer(`fooStream`, `aGroup`, e, l)
+		c, err := flowstream.NewConsumer(`fooStream`, `aGroup`, d, l)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -79,7 +74,7 @@ func main() {
 	})
 
 	wg.Go(func() {
-		c, err := flowstream.NewConsumer(`fooStream`, `aGroup`, e, l)
+		c, err := flowstream.NewConsumer(`fooStream`, `aGroup`, d, l)
 		if err != nil {
 			log.Fatal(err)
 		}

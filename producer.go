@@ -12,17 +12,17 @@ type Message struct {
 
 type Producer struct {
 	name string
-	e    *flowstate.Engine
+	d    flowstate.Driver
 }
 
-func NewProducer(stream string, e *flowstate.Engine) *Producer {
+func NewProducer(stream string, d flowstate.Driver) *Producer {
 	if stream == "" {
 		panic("BUG: stream is required")
 	}
 
 	return &Producer{
 		name: stream,
-		e:    e,
+		d:    d,
 	}
 }
 
@@ -46,5 +46,5 @@ func (ch *Producer) Send(msgs ...*Message) error {
 		}))
 	}
 
-	return ch.e.Do(flowstate.Commit(cmds...))
+	return ch.d.Commit(flowstate.Commit(cmds...))
 }

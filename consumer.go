@@ -17,7 +17,7 @@ type Consumer struct {
 	id     string
 	stream string
 	group  string
-	e      *flowstate.Engine
+	d      flowstate.Driver
 	l      *slog.Logger
 
 	mu   sync.Mutex
@@ -29,7 +29,7 @@ type Consumer struct {
 	stopCancel context.CancelFunc
 }
 
-func NewConsumer(stream, group string, e *flowstate.Engine, l *slog.Logger) (*Consumer, error) {
+func NewConsumer(stream, group string, d flowstate.Driver, l *slog.Logger) (*Consumer, error) {
 	if stream == "" {
 		panic("BUG: stream is required")
 	}
@@ -43,7 +43,7 @@ func NewConsumer(stream, group string, e *flowstate.Engine, l *slog.Logger) (*Co
 		id:     ulid.Make().String(),
 		stream: stream,
 		group:  group,
-		e:      e,
+		d:      d,
 		l:      l,
 
 		stopCtx:    ctx,
@@ -80,7 +80,7 @@ func (c *Consumer) Shutdown() error {
 	c.s.Annotations["state"] = "0"
 
 	stateCtx := c.s.CopyToCtx(&flowstate.StateCtx{})
-	if err := c.e.Do(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
+	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
 		return err
 	}
 	stateCtx.Current.CopyTo(&c.s)
@@ -146,7 +146,7 @@ func (c *Consumer) Commit(rev int64) error {
 	log.Println("commit", rev)
 	stateCtx := c.s.CopyToCtx(&flowstate.StateCtx{})
 	stateCtx.Current.SetAnnotation("rev", strconv.FormatInt(rev, 10))
-	if err := c.e.Do(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
+	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
 		return err
 	}
 	stateCtx.Current.CopyTo(&c.s)
@@ -160,7 +160,7 @@ func (c *Consumer) doSyncState() {
 	s := c.s.CopyTo(&flowstate.State{})
 	c.mu.Unlock()
 
-	iter := c.e.Iter(flowstate.GetStatesByLabels(map[string]string{
+	iter := flowstate.NewIter(c.d, flowstate.GetStatesByLabels(map[string]string{
 		"consumer.stream": c.stream,
 		"consumer.group":  c.group,
 	}).WithSinceRev(s.Rev).WithLatestOnly())
@@ -231,7 +231,7 @@ func (c *Consumer) doSyncState() {
 				"err", iter.Err(),
 			)
 
-			iter = c.e.Iter(flowstate.GetStatesByLabels(map[string]string{
+			iter = flowstate.NewIter(c.d, flowstate.GetStatesByLabels(map[string]string{
 				"consumer.stream": c.stream,
 				"consumer.group":  c.group,
 			}).WithSinceRev(s.Rev).WithLatestOnly())
@@ -252,7 +252,7 @@ func (c *Consumer) maybeDoHeartbeat(s flowstate.State) error {
 	}
 
 	msgStateCtx := &flowstate.StateCtx{}
-	if err := c.e.Do(flowstate.GetStateByLabels(msgStateCtx, map[string]string{
+	if err := c.d.GetStateByLabels(flowstate.GetStateByLabels(msgStateCtx, map[string]string{
 		"stream": c.stream,
 	})); err != nil {
 		return err
@@ -277,7 +277,7 @@ func (c *Consumer) doHeartbeat(s flowstate.State) error {
 
 func (c *Consumer) maybeDoTakeover(s flowstate.State) error {
 	msgStateCtx := &flowstate.StateCtx{}
-	if err := c.e.Do(flowstate.GetStateByLabels(msgStateCtx, map[string]string{
+	if err := c.d.GetStateByLabels(flowstate.GetStateByLabels(msgStateCtx, map[string]string{
 		"stream": c.stream,
 	})); err != nil {
 		return err
@@ -295,7 +295,7 @@ func (c *Consumer) doTakeover(s flowstate.State) error {
 	stateCtx.Current.Annotations["id"] = c.id
 	stateCtx.Current.Annotations["state"] = "1"
 	log.Println("TAKING OVER", stateCtx.Current.Annotations)
-	if err := c.e.Do(flowstate.Commit(flowstate.Park(stateCtx))); flowstate.IsErrRevMismatch(err) {
+	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); flowstate.IsErrRevMismatch(err) {
 		return c.getLatestOrCreateLocked(s.Rev)
 	} else if err != nil {
 		return err
@@ -313,7 +313,7 @@ func (c *Consumer) getLatestOrCreateLocked(sinceRev int64) error {
 		"consumer.stream": c.stream,
 		"consumer.group":  c.group,
 	}).WithSinceRev(sinceRev).WithLatestOnly().WithLimit(1)
-	if err := c.e.Do(getCmd); err != nil {
+	if err := c.d.GetStates(getCmd); err != nil {
 		return err
 	}
 	if len(getCmd.MustResult().States) == 0 {
@@ -332,7 +332,7 @@ func (c *Consumer) getLatestOrCreateLocked(sinceRev int64) error {
 			},
 		}
 
-		if err := c.e.Do(flowstate.Commit(flowstate.Park(s))); err == nil {
+		if err := c.d.Commit(flowstate.Commit(flowstate.Park(s))); err == nil {
 			s.Current.CopyTo(&c.s)
 			c.initIterLocked()
 			return nil
@@ -341,7 +341,7 @@ func (c *Consumer) getLatestOrCreateLocked(sinceRev int64) error {
 		}
 
 		s = &flowstate.StateCtx{}
-		if err := c.e.Do(flowstate.GetStateByID(s, sID, 0)); err != nil {
+		if err := c.d.GetStateByID(flowstate.GetStateByID(s, sID, 0)); err != nil {
 			return err
 		}
 
@@ -355,7 +355,7 @@ func (c *Consumer) getLatestOrCreateLocked(sinceRev int64) error {
 }
 
 func (c *Consumer) initIterLocked() {
-	c.iter = c.e.Iter(flowstate.GetStatesByLabels(map[string]string{
+	c.iter = flowstate.NewIter(c.d, flowstate.GetStatesByLabels(map[string]string{
 		"stream": c.stream,
 	}).WithSinceRev(c.sinceRev(c.s)))
 }

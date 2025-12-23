@@ -16,10 +16,10 @@ That design is implemented on purpose this way and provides several benefits.
 
 Produce:
 ```go
-// See flowstate docs on how to init Engine
-var e *flowstate.Engine
+// See flowstate docs on how to get a driver
+var d flowstate.Driver
 
-p := flowstream.NewProducer(`foo-stream`, e)
+p := flowstream.NewProducer(`foo-stream`, d)
 
 for i := 0; i < 10; i++ {
 	if err := p.Send(&flowstream.Message{
@@ -32,10 +32,10 @@ for i := 0; i < 10; i++ {
 
 Consume:
 ```go
-// See flowstate docs on how to init Engine
-var e *flowstate.Engine
+// See flowstate docs on how to get a driver
+var d flowstate.Driver
 
-c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, e, l)
+c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, d, l)
 if err != nil {
 	log.Fatal(err)
 }
