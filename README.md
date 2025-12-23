@@ -1,18 +1,40 @@
-## flowstreat
+## flowstream
 
-Flowstream is a library providing Kafka-like streaming semantics. 
-It works with any driver supported by [flowstate](https://github.com/makasim/flowstate).
-Currently PostgreSQL and BadgerDB are supported (see [Drivers](https://github.com/makasim/flowstate?tab=readme-ov-file#drivers)).
+Flowstream is a Golang package and server providing Kafka-like streaming capabilities:
+- Produce messages into a stream or streams.
+- Messages produced in one call preserve the order. The order between separate calls is not determined.
+- The message order in a stream is determined and cannot change. All consumer groups read messages in the same order.
+- Only one consumer per group is allowed to consume messages.
+- In case of failures, other standby consumers can take over, only one becomes active.
+- Several independent consumer groups could exist.
+- Partitions are not supported but will be.
+- No replication as there is no consensus algorithm.
 
-The model is **at least once** delivery, the model does best effort to guaranty only one consumer from the group can read stream. 
-In normal conditions with steady stream of upcoming message and fast message processing  the guarantee will hold. 
-In some edge cases several consumers may start processing messages but they should quickly detect race condition either by sync group state or on commit and diverge on single mode.
-That design is implemented on purpose this way and provides several benefits.
-- It is simple.
-- There is no consensus protocol.
-- Almost no heartbeats or other high frequency coordination.
-- There is as few meta state changes as possible.
-- Works on Postgress with great speed (TBD).
+### Purpose
+
+Provide a lightweight streaming solution, with sane fault tolerancy that runs on commodity databases like PostgreSQL. 
+Works without distributed consensus protocols or heavy coordination.
+
+**Key benefits:**
+- Simple architecture with minimal moving parts
+- No consensus protocol (Raft, Paxos, etc.) required
+- Minimal coordination overhead - almost no heartbeats or high-frequency synchronization
+- Minimal metadata state changes for better performance
+- Leverages existing database infrastructure (PostgreSQL, BadgerDB)
+- Fast performance on PostgreSQL (benchmarks TBD)
+
+### Failure modes
+
+In most cases, only one consumer is active. However, in edge cases or during crashes, two consumers might briefly work in parallel for a short period. The system will detect this and quickly converge back to a single active consumer.
+
+**How the system handles failures:**
+
+- **Consumer crash**: Standby consumers attempt to take over one minute after the last consumer group state change. One consumer wins and becomes active.
+- **Long message processing**: If message processing takes more than 30 seconds, the active consumer sends a heartbeat at 28 seconds since the last consumer state commit to maintain its active status.
+- **Graceful shutdown**: The active consumer explicitly commits its state as inactive. Standby consumers observe the state change and attempt to take over. One consumer wins.
+- **Zombie consumer**: Forced into standby mode by the async state sync goroutine or by revision mismatch conflict on commit, preventing dual active consumers. 
+
+### Examples
 
 Produce:
 ```go
@@ -75,3 +97,9 @@ for {
 	cancel()
 }
 ```
+
+
+* [Basic example](examples/simple/main.go).
+* [Consumer waits for new messages](examples/wait/main.go).
+* [Active\stand by consumers](examples/onlyone/main.go).
+* [Heartbeat](examples/heartbeat/main.go).
