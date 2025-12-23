@@ -16,7 +16,8 @@ That design is implemented on purpose this way and provides several benefits.
 
 Produce:
 ```go
-// See flowstate docs on how to get a driver
+// See flowstate docs for available driver implementations.
+// https://github.com/makasim/flowstate#drivers
 var d flowstate.Driver
 
 p := flowstream.NewProducer(`foo-stream`, d)
@@ -32,7 +33,8 @@ for i := 0; i < 10; i++ {
 
 Consume:
 ```go
-// See flowstate docs on how to get a driver
+// See flowstate docs for available driver implementations.
+// https://github.com/makasim/flowstate#drivers
 var d flowstate.Driver
 
 c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, d, l)
@@ -43,19 +45,31 @@ if err != nil {
 for {
 	for c.Next() {  
 		m := c.Message()
-		// handle your message here
-		
-		// commit one by one or by batches
-		//if err := c.Commit(c.Message().Rev); err != nil {
-		//	log.Fatal(err)
-		//}
+		// Process the message.
+		// Message processing should be idempotent, since delivery is at-least-once.
+
+		// Commit progress either per-message or in batches.
+		// Committing acknowledges that all messages up to the given revision
+		// have been successfully processed.
+		// if err := c.Commit(m.Rev); err != nil {
+		// 	log.Fatal(err)
+		// }
 	}
-	
+
+	// Check whether the consumer stopped due to an error.
 	if err := c.Err(); err != nil {
 		log.Fatal(err)
 	}
 
-	// Consumer reached the head of the topic, wait for a new message arrive or ctx time out.
+
+	// The consumer is at the head of the stream or in standby mode.
+	// Wait until:
+	//   - a new message arrives,
+	//   - the consumer is reactivated,
+	//   - or the context times out.
+	//
+	// The timeout guarantees control is returned to the caller,
+	// allowing periodic housekeeping or other work.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	c.Wait(ctx)
 	cancel()
