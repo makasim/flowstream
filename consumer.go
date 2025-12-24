@@ -19,6 +19,8 @@ type ReceivedMessage struct {
 
 	Rev  int64
 	Body []byte
+
+	stateCtx *flowstate.StateCtx
 }
 
 type Consumer struct {
@@ -56,6 +58,9 @@ func NewConsumer(stream, group string, d flowstate.Driver, l *slog.Logger) (*Con
 
 		stopCtx:    ctx,
 		stopCancel: cancel,
+		curr: &ReceivedMessage{
+			stateCtx: &flowstate.StateCtx{},
+		},
 	}
 	if err := c.getLatestOrCreateLocked(0); err != nil {
 		return nil, err
@@ -72,10 +77,7 @@ func (c *Consumer) Shutdown() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.s.Annotations["id"] != c.id {
-		return nil
-	}
-	if c.s.Annotations["state"] != "1" {
+	if !c.canConsume(c.s) {
 		return nil
 	}
 
@@ -93,52 +95,53 @@ func (c *Consumer) Shutdown() error {
 }
 
 func (c *Consumer) Receive(ctx context.Context) (*ReceivedMessage, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.canConsume(c.s) {
-		if _, ok := ctx.Deadline(); !ok {
-			panic("FATAL: Context without deadline is not allowed")
-		}
-
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
+	t := time.NewTimer(time.Second)
+	t.Stop()
 
 	for {
+		c.mu.Lock()
+		s := c.s.CopyTo(&flowstate.State{})
+		iter := c.iter
+		c.mu.Unlock()
+
+		if !c.canConsume(s) {
+			t.Reset(time.Second)
+
+			select {
+			case <-t.C:
+				continue
+			case <-ctx.Done():
+				t.Stop()
+				return nil, ctx.Err()
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
 
-		if c.iter.Next() {
-			s := c.iter.State()
+		if iter.Next() {
+			msgS := iter.State()
 
-			if b, ok := s.Annotations[`body`]; ok {
-				return &ReceivedMessage{
-					ConsumerGroup: c.group,
-					ConsumerID:    c.id,
-					Stream:        c.stream,
+			c.curr.Stream = c.stream
+			c.curr.ConsumerGroup = c.id
+			c.curr.ConsumerID = c.id
+			c.curr.Rev = msgS.Rev
 
-					Rev:  s.Rev,
-					Body: []byte(b),
-				}, nil
+			if b, ok := msgS.Annotations[`body`]; ok {
+				c.curr.Body = append(c.curr.Body[:0], b...)
+			} else {
+				msgS.CopyToCtx(c.curr.stateCtx)
+				if err := c.d.GetData(flowstate.GetData(c.curr.stateCtx, `body`)); err != nil {
+					return nil, err
+				}
+
+				c.curr.Body = append(c.curr.Body[:0], c.curr.stateCtx.MustData(`body`).Blob...)
 			}
-			msgStateCtx := c.s.CopyToCtx(&flowstate.StateCtx{})
 
-			if err := c.d.GetData(flowstate.GetData(msgStateCtx, `body`)); err != nil {
-				return nil, err
-			}
-
-			return &ReceivedMessage{
-				ConsumerGroup: c.group,
-				ConsumerID:    c.id,
-				Stream:        c.stream,
-
-				Rev:  s.Rev,
-				Body: msgStateCtx.MustData(`body`).Blob,
-			}, nil
+			return c.curr, nil
 		}
 		if c.iter.Err() != nil {
 			return nil, c.iter.Err()
