@@ -12,6 +12,15 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+type ReceivedMessage struct {
+	ConsumerGroup string
+	ConsumerID    string
+	Stream        string
+
+	Rev  int64
+	Body []byte
+}
+
 type Consumer struct {
 	id     string
 	stream string
@@ -22,7 +31,7 @@ type Consumer struct {
 	mu   sync.Mutex
 	s    flowstate.State
 	iter *flowstate.Iter
-	curr *Message
+	curr *ReceivedMessage
 
 	stopCtx    context.Context
 	stopCancel context.CancelFunc
@@ -59,10 +68,6 @@ func NewConsumer(stream, group string, d flowstate.Driver, l *slog.Logger) (*Con
 	return c, nil
 }
 
-func (c *Consumer) ID() string {
-	return c.id
-}
-
 func (c *Consumer) Shutdown() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -87,52 +92,63 @@ func (c *Consumer) Shutdown() error {
 	return nil
 }
 
-func (c *Consumer) Next() bool {
+func (c *Consumer) Receive(ctx context.Context) (*ReceivedMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if !c.canConsume(c.s) {
-		return false
-	}
-
-	if c.iter.Next() {
-		s := c.iter.State()
-		c.curr = &Message{
-			Rev:  s.Rev,
-			Body: []byte(s.Annotations["body"]),
+		if _, ok := ctx.Deadline(); !ok {
+			panic("FATAL: Context without deadline is not allowed")
 		}
-		return true
+
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 
-	return false
-}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 
-func (c *Consumer) Message() *Message {
-	if c.curr == nil {
-		panic("BUG: Next() must be called and return true")
-	}
+		if c.iter.Next() {
+			s := c.iter.State()
 
-	return c.curr
-}
+			if b, ok := s.Annotations[`body`]; ok {
+				return &ReceivedMessage{
+					ConsumerGroup: c.group,
+					ConsumerID:    c.id,
+					Stream:        c.stream,
 
-func (c *Consumer) Err() error {
-	return c.iter.Err()
-}
+					Rev:  s.Rev,
+					Body: []byte(b),
+				}, nil
+			}
+			msgStateCtx := c.s.CopyToCtx(&flowstate.StateCtx{})
 
-func (c *Consumer) Wait(ctx context.Context) {
-	c.mu.Lock()
-	can := c.canConsume(c.s)
-	c.mu.Unlock()
+			if err := c.d.GetData(flowstate.GetData(msgStateCtx, `body`)); err != nil {
+				return nil, err
+			}
 
-	if can {
+			return &ReceivedMessage{
+				ConsumerGroup: c.group,
+				ConsumerID:    c.id,
+				Stream:        c.stream,
+
+				Rev:  s.Rev,
+				Body: msgStateCtx.MustData(`body`).Blob,
+			}, nil
+		}
+		if c.iter.Err() != nil {
+			return nil, c.iter.Err()
+		}
+
 		c.iter.Wait(ctx)
-		return
 	}
-
-	<-ctx.Done()
 }
 
-func (c *Consumer) Commit(rev int64) error {
+func (c *Consumer) Commit(sinceRev int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -141,7 +157,7 @@ func (c *Consumer) Commit(rev int64) error {
 	}
 
 	stateCtx := c.s.CopyToCtx(&flowstate.StateCtx{})
-	stateCtx.Current.SetAnnotation("rev", strconv.FormatInt(rev, 10))
+	stateCtx.Current.SetAnnotation("since_rev", strconv.FormatInt(sinceRev, 10))
 	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
 		return err
 	}
@@ -266,7 +282,7 @@ func (c *Consumer) doHeartbeat(s flowstate.State) error {
 	}
 
 	stateCtx := s.CopyToCtx(&flowstate.StateCtx{})
-	stateCtx.Current.SetAnnotation("rev", strconv.FormatInt(c.sinceRev(s), 10))
+	stateCtx.Current.SetAnnotation("since_rev", strconv.FormatInt(c.sinceRev(s), 10))
 	if err := c.d.Commit(flowstate.Commit(flowstate.Park(stateCtx))); err != nil {
 		return err
 	}
@@ -321,9 +337,9 @@ func (c *Consumer) getLatestOrCreateLocked(sinceRev int64) error {
 			Current: flowstate.State{
 				ID: sID,
 				Annotations: map[string]string{
-					"id":    c.id,
-					"rev":   "0",
-					"state": "1",
+					"id":        c.id,
+					"since_rev": "0",
+					"state":     "1",
 				},
 				Labels: map[string]string{
 					"consumer.stream": c.stream,
@@ -361,7 +377,7 @@ func (c *Consumer) initIterLocked() {
 }
 
 func (c *Consumer) sinceRev(s flowstate.State) int64 {
-	sinceRev, _ := strconv.ParseInt(s.Annotations["rev"], 0, 64)
+	sinceRev, _ := strconv.ParseInt(s.Annotations["since_rev"], 0, 64)
 	return sinceRev
 }
 

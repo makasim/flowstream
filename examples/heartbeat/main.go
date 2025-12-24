@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -16,15 +17,13 @@ import (
 // The message processing takes too long, so not to lost active state the consumer sends a heartbeat (30s in).
 func main() {
 	l := slog.Default()
-	d := memdriver.New(l)
+	d := flowstate.NewCacheDriver(memdriver.New(l), 1000, l)
 
-	var cnt int
-	p := flowstream.NewProducer(`fooStream`, d)
-
+	p := flowstream.NewProducer(d)
 	for i := 0; i < 10; i++ {
-		cnt++
-		if err := p.Send(&flowstream.Message{
-			Body: []byte(fmt.Sprintf("hello world %d", cnt)),
+		if err := p.Send(&flowstream.ProduceMessage{
+			Stream: `fooStream`,
+			Body:   []byte(fmt.Sprintf("hello world %d", i)),
 		}); err != nil {
 			log.Fatal(err)
 		}
@@ -51,25 +50,24 @@ func consume(d flowstate.Driver) {
 	defer c.Shutdown()
 
 	for {
-		for c.Next() {
-			m := c.Message()
-			l.Info("got message", "consumer", c.ID(), "rev", m.Rev, "body", string(m.Body))
-
-			if string(m.Body) == `hello world 3` {
-				l.Info("the message processing takes 40s")
-				time.Sleep(time.Second * 40)
-			}
-
-			if err := c.Commit(m.Rev); err != nil {
-				log.Fatal(err)
-			}
-		}
-		if err := c.Err(); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		m, err := c.Receive(ctx)
+		cancel()
+		if errors.Is(err, context.DeadlineExceeded) {
+			continue
+		} else if err != nil {
 			log.Fatal(err)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		c.Wait(ctx)
-		cancel()
+		l.Info("got message", "consumer", m.ConsumerID, "rev", m.Rev, "body", string(m.Body))
+
+		if string(m.Body) == `hello world 3` {
+			l.Info("the message processing takes 40s")
+			time.Sleep(time.Second * 40)
+		}
+
+		if err := c.Commit(m.Rev); err != nil {
+			log.Fatal(err)
+		}
 	}
 }

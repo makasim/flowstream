@@ -1,49 +1,66 @@
 package flowstream
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/makasim/flowstate"
 	"github.com/oklog/ulid/v2"
 )
 
-type Message struct {
-	Rev  int64
-	Body []byte
+type ProduceMessage struct {
+	Stream string
+	Body   []byte
 }
 
 type Producer struct {
-	name string
-	d    flowstate.Driver
+	d flowstate.Driver
 }
 
-func NewProducer(stream string, d flowstate.Driver) *Producer {
-	if stream == "" {
-		panic("BUG: stream is required")
-	}
-
+func NewProducer(d flowstate.Driver) *Producer {
 	return &Producer{
-		name: stream,
-		d:    d,
+		d: d,
 	}
 }
 
-func (ch *Producer) Send(msgs ...*Message) error {
+func (ch *Producer) Send(msgs ...*ProduceMessage) error {
 	if len(msgs) == 0 {
-		return nil
+		return fmt.Errorf("no message provided")
 	}
+
+	var validErr error
 
 	var cmds []flowstate.Command
-	for _, msg := range msgs {
-		cmds = append(cmds, flowstate.Park(&flowstate.StateCtx{
+	for i, msg := range msgs {
+		if msg.Stream == "" {
+			errors.Join(validErr, fmt.Errorf("msgs[%d].stream is empty", i))
+		}
+
+		msgStateCtx := &flowstate.StateCtx{
 			Current: flowstate.State{
 				ID: flowstate.StateID(ulid.Make().String()),
 				Labels: map[string]string{
-					"stream": ch.name,
-				},
-				Annotations: map[string]string{
-					"body": string(msg.Body),
+					"stream": msg.Stream,
 				},
 			},
-		}))
+		}
+
+		if len(msg.Body) <= 100 {
+			msgStateCtx.Current.SetAnnotation("body", string(msg.Body))
+		} else {
+			msgStateCtx.Datas = map[string]*flowstate.Data{
+				"body": {
+					Blob: msg.Body,
+				},
+			}
+			cmds = append(cmds, flowstate.StoreData(msgStateCtx, "body"))
+		}
+
+		cmds = append(cmds, flowstate.Park(msgStateCtx))
+	}
+
+	if validErr != nil {
+		return validErr
 	}
 
 	return ch.d.Commit(flowstate.Commit(cmds...))

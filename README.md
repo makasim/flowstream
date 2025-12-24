@@ -38,63 +38,93 @@ In most cases, only one consumer is active. However, in edge cases or during cra
 
 Produce:
 ```go
-// See flowstate docs for available driver implementations.
-// https://github.com/makasim/flowstate#drivers
-var d flowstate.Driver
+package main
 
-p := flowstream.NewProducer(`foo-stream`, d)
+import (
+	"log"
+	"fmt"
+	"log/slog"
 
-for i := 0; i < 10; i++ {
-	if err := p.Send(&flowstream.Message{
-		Body: []byte(fmt.Sprintf("hello world %d", cnt)),
-	}); err != nil {
-		log.Fatal(err)
+	"github.com/makasim/flowstate"
+	"github.com/makasim/flowstate/memdriver"
+	"github.com/makasim/flowstream"
+)
+
+func main() {
+	l := slog.Default()
+	
+	// See flowstate docs for available driver implementations.
+	// https://github.com/makasim/flowstate#drivers
+	d := flowstate.NewCacheDriver(memdriver.New(l), 1000, l)
+	
+	p := flowstream.NewProducer(d)
+	for i := 0; i < 10; i++ {
+		if err := p.Send(&flowstream.ProduceMessage{
+			Stream: `foo-stream`,
+			Body: []byte(fmt.Sprintf("hello world %d", i)),
+		}); err != nil {
+			log.Fatal(err)
+		}
 	}
 }
 ```
 
 Consume:
 ```go
-// See flowstate docs for available driver implementations.
-// https://github.com/makasim/flowstate#drivers
-var d flowstate.Driver
+package main
 
-c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, d, slog.Default())
-if err != nil {
-	log.Fatal(err)
-}
+import (
+	"context"
+	"fmt"
+	"log"
+	"log/slog"
+	"sync"
+	"time"
 
-for {
-	for c.Next() {  
-		m := c.Message()
+	"github.com/makasim/flowstate"
+	"github.com/makasim/flowstate/memdriver"
+	"github.com/makasim/flowstream"
+)
+
+func main() {
+    l := slog.Default()
+    
+    // See flowstate docs for available driver implementations.
+    // https://github.com/makasim/flowstate#drivers
+    d := flowstate.NewCacheDriver(memdriver.New(l), 1000, l)
+    
+    c, err := flowstream.NewConsumer(`foo-stream`, `aConsumerGroup`, d, slog.Default())
+    if err != nil {
+        log.Fatal(err)
+    }
+
+	for {
+		//  context.DeadlineExceeded signals the consumer is at the head of the stream or in standby mode.
+		// Wait until:
+		//   - a new message arrives,
+		//   - the consumer is reactivated,
+		//
+		// The timeout guarantees control is returned to the caller,
+		// allowing periodic housekeeping or other work.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		m, err := c.Receive(ctx)
+		cancel()
+		if errors.Is(err, context.DeadlineExceeded) {
+			continue
+		} else if err != nil {
+			log.Fatal(err)
+		}
+
 		// Process the message.
 		// Message processing should be idempotent, since delivery is at-least-once.
 
 		// Commit progress either per-message or in batches.
 		// Committing acknowledges that all messages up to the given revision
 		// have been successfully processed.
-		// if err := c.Commit(m.Rev); err != nil {
-		// 	log.Fatal(err)
-		// }
+		if err := c.Commit(m.Rev); err != nil {
+			log.Fatal(err)
+		}
 	}
-
-	// Check whether the consumer stopped due to an error.
-	if err := c.Err(); err != nil {
-		log.Fatal(err)
-	}
-
-
-	// The consumer is at the head of the stream or in standby mode.
-	// Wait until:
-	//   - a new message arrives,
-	//   - the consumer is reactivated,
-	//   - or the context times out.
-	//
-	// The timeout guarantees control is returned to the caller,
-	// allowing periodic housekeeping or other work.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	c.Wait(ctx)
-	cancel()
 }
 ```
 
